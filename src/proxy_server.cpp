@@ -102,10 +102,10 @@ void ProxyServer::setup_listener() {
 
 void ProxyServer::run() {
   setup_listener();
-  running_ = true;
+  running_.store(true, std::memory_order_relaxed);
   std::array<epoll_event, kMaxEvents> events{};
 
-  while (running_) {
+  while (running_.load(std::memory_order_relaxed)) {
     const int n = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), 100);
     if (n < 0) {
       if (errno == EINTR) {
@@ -137,7 +137,7 @@ void ProxyServer::run() {
 }
 
 void ProxyServer::stop() {
-  running_ = false;
+  running_.store(false, std::memory_order_relaxed);
   if (wake_fd_ >= 0) {
     std::uint64_t one = 1;
     (void)::write(wake_fd_, &one, sizeof(one));
@@ -165,6 +165,14 @@ void ProxyServer::stop() {
   if (epoll_fd_ >= 0) {
     ::close(epoll_fd_);
     epoll_fd_ = -1;
+  }
+}
+
+void ProxyServer::request_stop() {
+  running_.store(false, std::memory_order_relaxed);
+  if (wake_fd_ >= 0) {
+    std::uint64_t one = 1;
+    (void)::write(wake_fd_, &one, sizeof(one));
   }
 }
 

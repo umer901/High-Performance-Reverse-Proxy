@@ -14,6 +14,10 @@ import threading
 import time
 
 
+class TestBackendServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 class BackendHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/healthz":
@@ -43,8 +47,8 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def start_backend(name, port):
-    server = ThreadingHTTPServer(("127.0.0.1", port), BackendHandler)
+def start_backend(name):
+    server = TestBackendServer(("127.0.0.1", 0), BackendHandler)
     server.backend_name = name
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -64,6 +68,19 @@ def http_get(port, path="/"):
         return b"".join(chunks)
 
 
+def wait_for_backend(port):
+    deadline = time.time() + 5
+    last_error = None
+    while time.time() < deadline:
+        try:
+            if b" 200 " in http_get(port, "/healthz"):
+                return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.05)
+    raise RuntimeError(f"backend on port {port} did not become ready; last_error={last_error!r}")
+
+
 def wait_for_proxy(port):
     deadline = time.time() + 5
     last = b""
@@ -78,6 +95,17 @@ def wait_for_proxy(port):
     raise RuntimeError(f"proxy did not become ready; last response={last!r}")
 
 
+def stop_process(proc):
+    if proc.poll() is not None:
+        return
+    proc.send_signal(signal.SIGTERM)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
@@ -85,8 +113,10 @@ def main():
 
     proxy_port = free_port()
     metrics_port = free_port()
-    backend_ports = [free_port(), free_port()]
-    backends = [start_backend(f"backend-{i}", port) for i, port in enumerate(backend_ports)]
+    backends = [start_backend(f"backend-{i}") for i in range(2)]
+    backend_ports = [backend.server_address[1] for backend in backends]
+    for port in backend_ports:
+        wait_for_backend(port)
 
     config = f"""
 listen: "127.0.0.1:{proxy_port}"
@@ -127,9 +157,9 @@ backends:
         try:
             wait_for_proxy(proxy_port)
         except Exception:
-            proc.send_signal(signal.SIGTERM)
+            stop_process(proc)
             try:
-                _, stderr = proc.communicate(timeout=3)
+                _, stderr = proc.communicate(timeout=1)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 _, stderr = proc.communicate()
@@ -149,14 +179,11 @@ backends:
         assert b"hprp_requests_total" in metrics, metrics
         assert b"hprp_backend_healthy" in metrics, metrics
     finally:
-        proc.send_signal(signal.SIGTERM)
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        stop_process(proc)
         os.unlink(cfg_path)
         for backend in backends:
             backend.shutdown()
+            backend.server_close()
 
 
 if __name__ == "__main__":
