@@ -5,6 +5,7 @@
 #include "hprp/metrics.hpp"
 
 #include <chrono>
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -20,6 +21,7 @@ public:
 
   void run();
   void stop();
+  void request_stop();
 
 private:
   enum class FdRole { Listener, Client, Backend };
@@ -65,7 +67,7 @@ private:
   AppConfig config_;
   BackendPool &backend_pool_;
   Metrics &metrics_;
-  bool running_{false};
+  std::atomic<bool> running_{false};
   int listen_fd_{-1};
   int epoll_fd_{-1};
   int wake_fd_{-1};

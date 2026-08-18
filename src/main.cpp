@@ -18,7 +18,7 @@ hprp::ProxyServer *g_server = nullptr;
 
 void handle_signal(int) {
   if (g_server != nullptr) {
-    g_server->stop();
+    g_server->request_stop();
   }
 }
 
